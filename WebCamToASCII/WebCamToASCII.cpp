@@ -1,59 +1,91 @@
 #include "ImageToASCIIconvertor.h"
 
-const int fps = 60;
+//#define WIN32_LEAN_AND_MEAN
+//#define NOMINMAX
+//#include <Windows.h>
+#include <opencv2/highgui.hpp>
+#include <chrono> 
+
+constexpr int FPS = 60;
 
 int main()
 {
-    Mat image; 
+    cv::Mat image;
+    cv::VideoCapture vid(0);
 
-    VideoCapture vid(0);
-	//vid >> image;
-	
     if (!vid.isOpened()) return -1;
 
+    // Compute output dimensions once up front
+    int camWidth  = static_cast<int>(vid.get(cv::CAP_PROP_FRAME_WIDTH));
+    int camHeight = static_cast<int>(vid.get(cv::CAP_PROP_FRAME_HEIGHT));
 
-	Sleep(1000); // TIME TO RESCALE CONSOLE TO MAXIMUM // IF NOT DONE THE IMAGE WILL BE TEARED
+    float imasp = static_cast<float>(camWidth) / NWIDTH;
+    //int nheight = static_cast<int>(std::round(camHeight * ASPECT / imasp));
 
-    while (vid.read(image)) {
-        //vid >> frame;
-        imshow("Webcam", image);
+   
+    int scaledCols = NWIDTH / SCALE;
+    //int scaledRows = nheight / SCALE;
 
-		if (waitKey(1000 / fps) >= 0) {
-			break;
-		}
+    //// Reuse the same buffer each frame to avoid repeated allocation
+    //std::vector<char> asciiBuffer;
+    //asciiBuffer.reserve(scaledRows * scaledCols);
 
-		//rescaling
-		int rows = vid.get(cv::CAP_PROP_FRAME_WIDTH);
-		int cols = vid.get(cv::CAP_PROP_FRAME_HEIGHT);
+    //while (vid.read(image))
+    //{
+    //    cv::imshow("Webcam", image);
 
-		//cout << rows << " " << cols << endl;
+    //    if (cv::waitKey(1000 / FPS) >= 0)
+    //        break;
 
-		float imasp = (float)rows / nwidth;
-		int nheight = round(cols * aspect / imasp);
-		resize(image, image, { nwidth, nheight }, 0, 0, INTER_NEAREST);
+    //    cv::resize(image, image, { NWIDTH, nheight }, 0, 0, cv::INTER_NEAREST);
 
-		Size sz = image.size();
+    //    convertToASCII(image, scaledRows, scaledCols, SCALE, asciiBuffer);
 
-		rows = sz.height;
-		cols = sz.width;
+    //    std::cout << "\033[H";
+    //    printASCII(asciiBuffer, scaledRows, scaledCols);
+    //}
 
-		//cout << rows << " " << cols << endl;
+    //return 0;
 
-		int scale = 1; //SCALExSCALE pixel square // reduction size
+    // Measure how large each character renders so we can size the canvas exactly
+    CharMetrics metrics = measureChar();
 
-		int scaledRows = rows / scale;
-		int scaledCols = cols / scale;
+    int scaledRows = static_cast<int>(std::round(
+        static_cast<float>(camHeight) / camWidth * scaledCols
+        * metrics.width / metrics.height   // correct for cell aspect ratio (width != height)
+    ));
+    int nheight = scaledRows * SCALE;
 
-		//cout << scaledRows << " " << scaledCols << endl;
+    int canvasW = scaledCols * metrics.width;
+    int canvasH = scaledRows * metrics.height;
 
-		//show image
-		
-		cout << "\033[2J\033[H"; // Clear screen and move cursor to top-left
-		printMatrix(convertToASCII(image, scaledRows, scaledCols, scale));
+    // Preallocate both buffers once — reused every frame
+    std::vector<char> asciiBuffer;
+    asciiBuffer.reserve(scaledRows * scaledCols);
 
+    cv::Mat canvas(canvasH, canvasW, CV_8UC3);
+
+    // imshow will auto-create the window on first call — namedWindow not needed
+
+    while (vid.read(image))
+    {
+        auto frameStart = std::chrono::steady_clock::now();
+
+        cv::resize(image, image, { NWIDTH, nheight }, 0, 0, cv::INTER_NEAREST);
+
+        convertToASCII(image, scaledRows, scaledCols, SCALE, asciiBuffer);
+        renderASCII(asciiBuffer, scaledRows, scaledCols, metrics, canvas, "ASCII");
+
+        // Wait only the time remaining in the frame budget
+        // If conversion + render already took longer than 1/FPS, just pump events
+        auto elapsed = std::chrono::steady_clock::now() - frameStart;
+        int elapsedMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+        int remainingMs = (1000 / FPS) - elapsedMs;
+
+        if (cv::waitKey(remainingMs > 0 ? remainingMs : 1) >= 0)
+            break;
     }
-
-
 
     return 0;
 }
+

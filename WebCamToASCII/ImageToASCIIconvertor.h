@@ -1,90 +1,136 @@
 #pragma once
-#pragma once
-#include <Windows.h>
+
+//#include <Windows.h>
+
 #include <iostream>
+#include <string>
+#include <vector>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/highgui.hpp>
-#include <vector>
-
-using namespace cv;
-using namespace std;
 
 
-const int nwidth = 400; // width // resolution
-const float aspect = 11.0 / 24.0; // aspect pixel to ascii
-const char* gradient = " .:!/r(lZ4H9W8$@"; //shadowing
+//using namespace cv;
+//using namespace std;
 
-vector<vector<char>> convertToASCII(Mat image, int scaledRows, int scaledCols, int scale = 1) {
+constexpr int NWIDTH = 1000; // width // resolution
+constexpr float ASPECT = 11.0f / 24.0f; // aspect pixel to ascii
+constexpr const char* GRADIENT = " .:!/r(lZ4H9W8$@"; //shadowing
+constexpr int GRADIENT_LEN = 16;
+constexpr int SCALE = 3;
 
-	vector<vector<char>> ascii(scaledRows, vector<char>(scaledCols, ' '));
+void convertToASCII(const cv::Mat& image, int scaledRows, int scaledCols, int scale,
+    std::vector<char>& outBuffer)
+{
+    outBuffer.assign(scaledRows * scaledCols, ' ');
 
-	if (scale == 1) {
-		for (int i = 0, x = 0; x < scaledRows; i += scale, x++) {
-			for (int j = 0, y = 0; y < scaledCols; j += scale, y++) {
+    for (int x = 0; x < scaledRows; ++x)
+    {
+        for (int y = 0; y < scaledCols; ++y)
+        {
+            int i = x * scale;
+            int j = y * scale;
 
-				//if scale == 1
-				Vec3b pixel = image.at<Vec3b>(i, j);
-				int color = round((pixel[0] + pixel[1] + pixel[2]) / 3.0);
-				ascii[x][y] = gradient[color / 16];
-			}
-		}
+            int colorSum = 0;
+            int sampleCount = 0;
 
-		return ascii;
-	}
+            for (int m = 0; m < scale; ++m)
+            {
+                for (int n = 0; n < scale; ++n)
+                {
+                    int pi = i + m;
+                    int pj = j + n;
+                    if (pi >= image.rows || pj >= image.cols)
+                        continue;
 
-	//else
-	for (int i = 0, x = 0; x < scaledRows; i += scale, x++) {
-		for (int j = 0, y = 0; y < scaledCols; j += scale, y++) {
+                    const cv::Vec3b& pixel = image.at<cv::Vec3b>(pi, pj);
+                    colorSum += (pixel[0] + pixel[1] + pixel[2]) / 3;
+                    ++sampleCount;
+                }
+            }
 
-			//taking pixels
-			//if scale > 1
-			int colorSum = 0;
-			for (int m = 0; m < scale; m++) {
-				int color = 0;
-				for (int n = 0; n < scale; n++) {
-					if (i + m >= image.size().height - 1 || j + n >= image.size().width - 1) {
-						color = 0;
-					}
-					else {
-						Vec3b pixel = image.at<Vec3b>(i + m, j + n);
-						color = round((pixel[0] + pixel[1] + pixel[2]) / 3.0);
-					}
+            int avgColor = (sampleCount > 0) ? (colorSum / sampleCount) : 0; // grayscale
 
-				}
-				colorSum += color;
-			}
+            // Map 0-255 brightness to gradient index
+            int gradientIndex = (avgColor * (GRADIENT_LEN - 1)) / 255;
 
-			//if scale == 1
-			/*Vec3b pixel = image.at<Vec3b>(i, j);
-			int color = round((pixel[0] + pixel[1] + pixel[2]) / 3.0);*/
-
-			//avg color if scale > 1
-			colorSum /= (scale * scale);
-
-			//cout << i << " " << j << " " << x << " " << y << " " << endl;
-
-			//if scale > 1
-			ascii[x][y] = gradient[colorSum / 16];
-			//ascii[x][y] = gradient[color / 16];
-		}
-	}
-
-	return ascii;
+            outBuffer[x * scaledCols + y] = GRADIENT[gradientIndex];
+        }
+    }
 }
 
-void printMatrix(vector<vector<char>> matrix) {
+//void printASCII(const std::vector<char>& buffer, int rows, int cols)
+//{
+//    // +rows for the newlines
+//    std::vector<char> printBuffer(rows * cols + rows);
+//    size_t idx = 0;
+//
+//    for (int r = 0; r < rows; ++r)
+//    {
+//        for (int c = 0; c < cols; ++c)
+//            printBuffer[idx++] = buffer[r * cols + c];
+//        printBuffer[idx++] = '\n';
+//    }
+//
+//    std::cout.write(printBuffer.data(), idx);
+//}
 
-	vector<char> buffer(matrix.size() * matrix[0].size() + matrix.size()); //area + (\n)
+constexpr float FONT_SCALE = 0.4f;
+static const int FONT_FACE = cv::FONT_HERSHEY_PLAIN;
 
-	size_t bufferIndex = 0;
-	for (const auto& row : matrix) {
-		for (char c : row) {
-			buffer[bufferIndex++] = c;
-		}
-		buffer[bufferIndex++] = '\n'; // Add newline at the end of each row
-	}
+struct CharMetrics
+{
+    int width;
+    int height;
+    int baseline;
+};
+inline CharMetrics measureChar()
+{
+    int baseline = 0;
+    // Measure the widest character to use as the fixed cell width
+    cv::Size sz = cv::getTextSize("W", FONT_FACE, FONT_SCALE, 1, &baseline);
+    int cellW = sz.width + 2;  // +2 horizontal gap between characters
+    int cellH = sz.height + 3;  // +3 vertical gap between rows
+    return { cellW, cellH, baseline };
+}
 
-	cout.write(buffer.data(), buffer.size());
+void renderASCII(const std::vector<char>& buffer,
+    int rows, int cols,
+    const CharMetrics& metrics,
+    cv::Mat& canvas,
+    const std::string& windowName = "ASCII")
+{
+    // Wipe canvas black — fast memset internally
+    canvas.setTo(cv::Scalar(0, 0, 0));
+
+    std::string rowStr(cols, ' ');
+    char str[2] = { 0, 0 }; // reusable single-char string
+    for (int r = 0; r < rows; ++r)
+    {
+        // Fixed y per row — same for every character in the row
+        int y = (r + 1) * metrics.height - metrics.baseline;
+
+        for (int c = 0; c < cols; ++c)
+        {
+            str[0] = buffer[r * cols + c];
+
+            // Fixed x per column — every character occupies exactly metrics.width pixels
+            int x = c * metrics.width;
+
+            cv::putText(canvas, str,
+                { x, y },
+                FONT_FACE, FONT_SCALE,
+                cv::Scalar(255, 255, 255),
+                1, cv::LINE_AA);
+        }
+    }
+
+    // Upscale to display width, preserving canvas aspect ratio exactly
+    // so INTER_NEAREST distributes rows evenly (no stripe artifacts)
+    constexpr int displayW = 900;
+    int displayH = static_cast<int>(static_cast<float>(displayW) * canvas.rows / canvas.cols);
+    cv::Mat display;
+    cv::resize(canvas, display, { displayW, displayH }, 0, 0, cv::INTER_NEAREST);
+    cv::imshow(windowName, display);
 }
